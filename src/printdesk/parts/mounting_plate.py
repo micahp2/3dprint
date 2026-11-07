@@ -57,9 +57,27 @@ def describe(p: Params, material: Material) -> dict:
     """Features validation must verify in the finished solid."""
     holes = []
     for h in p.holes:
-        d = fasteners.hole_diameter(h.screw, material)
-        # blind insert pockets are probed near the top face, through holes mid-plate
-        z = p.thickness - 0.5 if h.style == "insert" else p.thickness / 2
-        holes.append({"x": h.x, "y": h.y, "z": z, "diameter": d,
-                      "boss_needed": fasteners.min_boss_diameter(h.screw, material)})
+        s = fasteners.screw(h.screw)
+        shaft_d = fasteners.hole_diameter(h.screw, material)
+        if h.style == "insert":
+            # blind pocket opening at the top: probe near the top face
+            d = s.insert_d + material.hole_comp * 0.5
+            probe_z, outer_d, outer_z = p.thickness - 0.5, d, p.thickness - 0.5
+        elif h.style == "counterbore":
+            # shaft is the only feature in the bottom layer; the head recess is at the top
+            d = shaft_d
+            probe_z = 0.3
+            outer_d = s.head_d + material.hole_comp + 0.3
+            outer_z = p.thickness - 0.2
+        elif h.style == "countersink":
+            d = shaft_d
+            probe_z = 0.3
+            outer_d = s.csk_d + material.hole_comp
+            outer_z = p.thickness - 0.1
+        else:
+            d = shaft_d
+            probe_z = p.thickness / 2
+            outer_d, outer_z = shaft_d, p.thickness / 2
+        holes.append({"x": h.x, "y": h.y, "z": probe_z, "diameter": d,
+                      "outer_diameter": outer_d, "outer_z": outer_z})
     return {"holes": holes, "extent": (p.width, p.depth, p.thickness)}

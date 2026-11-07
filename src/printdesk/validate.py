@@ -44,26 +44,39 @@ def check(part: Part, spec: dict, material: Material) -> Report:
     if material.name == "TPU" and size[2] > 120:
         r.warnings.append("tall TPU part: expect poor results")
 
-    # every specified hole must really be void at its position, and solid just outside it
-    for i, h in enumerate(spec.get("holes", [])):
-        d = h["diameter"]
-        centre = Vector(h["x"], h["y"], h["z"])
-        if part.is_inside(centre):
-            r.errors.append(f"hole {i} at ({h['x']}, {h['y']}) is not void in the model")
+    holes = spec.get("holes", [])
+    half_x, half_y = size[0] / 2, size[1] / 2
+    for i, h in enumerate(holes):
+        where = f"hole {i} at ({h['x']}, {h['y']})"
+        d, od = h["diameter"], h["outer_diameter"]
+
+        # 1. the bore must really be void, and solid immediately outside the widest feature
+        if part.is_inside(Vector(h["x"], h["y"], h["z"])):
+            r.errors.append(f"{where} is not void in the model")
             continue
-        # wall check: probe outward from the hole edge along +x and -x
+        if od > d + 1e-6 and part.is_inside(Vector(h["x"], h["y"], h["outer_z"])):
+            r.errors.append(f"{where}: head recess/countersink is missing from the model")
+        # the shaft's own wall: probe outside the bore at the bore's probe height
         for sign in (1, -1):
             edge = Vector(h["x"] + sign * (d / 2 + 0.05), h["y"], h["z"])
-            if not part.is_inside(edge) and abs(edge.X) < size[0] / 2 - 1:
-                r.warnings.append(
-                    f"hole {i} at ({h['x']}, {h['y']}): no material right beside the hole "
-                    f"(overlaps another feature?)")
+            if abs(edge.X) < half_x - 1 and not part.is_inside(edge):
+                r.warnings.append(f"{where}: no material beside the bore (overlaps another feature?)")
                 break
-        # wall thickness to the nearest outer edge in X and Y
-        half_x, half_y = size[0] / 2, size[1] / 2
-        wall = min(half_x - abs(h["x"]), half_y - abs(h["y"])) - d / 2
+
+        # 2. wall to the plate edge, measured from the widest feature
+        wall = min(half_x - abs(h["x"]), half_y - abs(h["y"])) - od / 2
         if wall < material.min_wall:
             r.errors.append(
-                f"hole {i} at ({h['x']}, {h['y']}) leaves {wall:.2f} mm wall to the edge; "
+                f"{where} leaves {wall:.2f} mm wall to the edge; "
                 f"{material.name} needs >= {material.min_wall} mm")
+
+        # 3. wall between this hole and every later hole
+        for j in range(i + 1, len(holes)):
+            o = holes[j]
+            gap = ((h["x"] - o["x"]) ** 2 + (h["y"] - o["y"]) ** 2) ** 0.5 \
+                - od / 2 - o["outer_diameter"] / 2
+            if gap < material.min_wall:
+                r.errors.append(
+                    f"holes {i} and {j} leave {gap:.2f} mm between them; "
+                    f"{material.name} needs >= {material.min_wall} mm")
     return r

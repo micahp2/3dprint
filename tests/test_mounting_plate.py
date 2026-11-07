@@ -55,3 +55,29 @@ def test_all_hole_styles_validate(style):
               "holes": [{"x": 0, "y": 0, "screw": "M3", "style": style}]}
     _, report, _ = build_part("mounting_plate", params, "PLA")
     assert report.ok, report.errors
+
+
+def test_counterbore_and_countersink_give_no_false_warning():
+    params = {"width": 60, "depth": 40, "thickness": 6,
+              "holes": [{"x": -20, "y": 0, "screw": "M4", "style": "counterbore"},
+                        {"x": 20, "y": 0, "screw": "M4", "style": "countersink"}]}
+    _, report, _ = build_part("mounting_plate", params, "PETG-CF")
+    assert report.ok, report.errors
+    assert report.warnings == []
+
+
+def test_counterbore_head_too_close_to_edge_is_rejected():
+    # PETG-CF: the shaft alone leaves 1.63 mm of wall (passes the 1.6 mm minimum),
+    # but the wider M4 head recess leaves only 0.23 mm, so this must be rejected
+    params = {"width": 30, "depth": 30, "thickness": 8,
+              "holes": [{"x": 11, "y": 0, "screw": "M4", "style": "counterbore"}]}
+    _, report, _ = build_part("mounting_plate", params, "PETG-CF")
+    assert not report.ok
+    assert any("wall to the edge" in e for e in report.errors)
+
+
+def test_holes_too_close_together_are_rejected():
+    params = {"holes": [{"x": 0, "y": 0, "screw": "M3"}, {"x": 4, "y": 0, "screw": "M3"}]}
+    _, report, _ = build_part("mounting_plate", params, "PLA")
+    assert not report.ok
+    assert any("between them" in e for e in report.errors)
