@@ -17,47 +17,50 @@ BOTTOM = (Align.CENTER, Align.CENTER, Align.MIN)
 
 
 class Params(BaseModel):
-    # camera body (measure with calipers)
-    camera_w: float = Field(25.5, ge=10, le=60, description="camera width, X")
-    camera_h: float = Field(25.5, ge=10, le=60, description="camera height, Y")
-    camera_len: float = Field(28.0, ge=10, le=80, description="camera front-to-back, Z")
-    lens_ring_d: float = Field(19.0, ge=5, le=40, description="outer diameter of the lens ring")
+    # camera body: caliper readings 23.54 / 23.37 mm across the body, 26.49 mm front to back
+    camera_w: float = Field(23.5, ge=10, le=60, description="camera width, X")
+    camera_h: float = Field(23.4, ge=10, le=60, description="camera height, Y")
+    camera_len: float = Field(26.5, ge=10, le=80, description="camera front-to-back, Z")
+    lens_ring_d: float = Field(14.0, ge=5, le=40, description="outer diameter of the lens ring (estimated)")
     fit_clearance: float = Field(0.4, ge=0.1, le=2.0, description="slack around the camera, total")
     # mount
-    wall: float = Field(2.0, ge=1.2, le=6)
+    min_wall: float = Field(2.0, ge=1.2, le=6, description="thinnest allowed wall around the camera pocket")
     front_wall: float = Field(1.6, ge=1.2, le=6)
     pod_height: float = Field(14.0, ge=6, le=40, description="pod height above the flange")
-    flange_length: float = Field(122.0, ge=50, le=200)
-    flange_width: float = Field(40.0, ge=20, le=80)
+    flange_length: float = Field(121.4, ge=50, le=200, description="strap measured 121.36 mm")
+    flange_width: float = Field(44.0, ge=20, le=80)
     flange_thickness: float = Field(3.0, ge=2, le=10)
-    bolt_spacing: float = Field(96.0, ge=30, le=190, description="centre to centre")
-    bolt_screw: str = "M5"
-    # the opening in the car's trim ring (inner size) and how loose the pod may sit in it
-    opening_w: float = Field(35.0, ge=15, le=100)
-    opening_h: float = Field(31.0, ge=15, le=100)
-    opening_gap: float = Field(0.6, ge=0.2, le=3.0)
+    bolt_spacing: float = Field(
+        103.24, ge=30, le=190,
+        description="centre to centre: (109.79 outer-edge + 96.69 inner-edge hole readings) / 2")
+    bolt_screw: str = "M6"   # measured thread 5.92 mm, 20 mm long hex flange bolt
+    # the opening in the car's trim ring; the pod is sized to fill it, minus a small gap
+    opening_w: float = Field(35.03, ge=15, le=100, description="trim opening width, caliper")
+    opening_h: float = Field(34.76, ge=15, le=100, description="trim opening other dimension, caliper")
+    opening_gap: float = Field(0.6, ge=0.2, le=3.0, description="total slack between pod and opening")
 
     @property
     def pod_w(self) -> float:
-        return self.camera_w + self.fit_clearance + 2 * self.wall
+        return self.opening_w - self.opening_gap
 
     @property
     def pod_d(self) -> float:
-        return self.camera_h + self.fit_clearance + 2 * self.wall
+        return self.opening_h - self.opening_gap
 
     @model_validator(mode="after")
     def _check(self):
         fasteners.screw(self.bolt_screw)
-        if self.pod_w > self.opening_w - self.opening_gap:
+        side_w = (self.pod_w - (self.camera_w + self.fit_clearance)) / 2
+        side_d = (self.pod_d - (self.camera_h + self.fit_clearance)) / 2
+        if min(side_w, side_d) < self.min_wall:
             raise ValueError(
-                f"pod width {self.pod_w:.1f} mm does not fit opening {self.opening_w} mm "
-                f"with a {self.opening_gap} mm gap; reduce wall/clearance or remeasure")
-        if self.pod_d > self.opening_h - self.opening_gap:
+                f"opening {self.opening_w} x {self.opening_h} mm leaves only "
+                f"{min(side_w, side_d):.2f} mm wall around the camera; need >= {self.min_wall} mm")
+        end_margin = (self.flange_length - self.bolt_spacing) / 2   # centre of hole to flange end
+        if end_margin - fasteners.screw(self.bolt_screw).clearance / 2 < 3.0:
             raise ValueError(
-                f"pod height {self.pod_d:.1f} mm does not fit opening {self.opening_h} mm "
-                f"with a {self.opening_gap} mm gap; reduce wall/clearance or remeasure")
-        if self.flange_length - self.bolt_spacing < 2 * (fasteners.screw(self.bolt_screw).clearance + 4):
-            raise ValueError("bolt holes too close to the flange ends")
+                f"bolt holes leave only {end_margin - fasteners.screw(self.bolt_screw).clearance / 2:.1f} mm "
+                f"of material to the flange ends; need >= 3 mm")
         if self.flange_width < self.pod_d + 6:
             raise ValueError("flange too narrow to carry the pod")
         if self.lens_ring_d + 1.0 > min(self.camera_w, self.camera_h):
