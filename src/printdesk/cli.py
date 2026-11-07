@@ -15,6 +15,10 @@ from .parts import REGISTRY
 from .validate import check
 
 
+def mod_for(name: str):
+    return REGISTRY[name]
+
+
 def build_part(name: str, params: dict, material_name: str):
     if name not in REGISTRY:
         raise SystemExit(f"unknown part {name!r}; known: {sorted(REGISTRY)}")
@@ -23,6 +27,8 @@ def build_part(name: str, params: dict, material_name: str):
     p = mod.Params(**params)
     solid = mod.build(p, material)
     report = check(solid, mod.describe(p, material), material)
+    if hasattr(mod, "extra_checks"):
+        mod.extra_checks(solid, p, material, report)
     return solid, report, p
 
 
@@ -52,8 +58,9 @@ def main(argv=None) -> int:
         return 1
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    export_step(solid, str(out.with_suffix(".step")))
-    export_stl(solid, str(out.with_suffix(".stl")))
+    export_step(solid, str(out.with_suffix(".step")))        # always in the part's own (car) frame
+    printable = mod_for(a.part).print_orientation(solid) if hasattr(mod_for(a.part), "print_orientation") else solid
+    export_stl(printable, str(out.with_suffix(".stl")))      # in print orientation when the part defines one
     meta = {"part": a.part, "material": a.material, "params": p.model_dump()}
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2))
     print(f"ok: wrote {out}.step/.stl/.json")
