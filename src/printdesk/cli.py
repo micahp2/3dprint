@@ -59,7 +59,7 @@ def main(argv=None) -> int:
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     export_step(solid, str(out.with_suffix(".step")))        # always in the part's own (car) frame
-    printable = mod_for(a.part).print_orientation(solid) if hasattr(mod_for(a.part), "print_orientation") else solid
+    printable = mod_for(a.part).print_orientation(solid, p) if hasattr(mod_for(a.part), "print_orientation") else solid
     export_stl(printable, str(out.with_suffix(".stl")))      # in print orientation when the part defines one
     meta = {"part": a.part, "material": a.material, "params": p.model_dump()}
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2))

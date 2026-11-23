@@ -37,13 +37,13 @@ class Params(BaseModel):
     lens_ring_d: float = Field(14.0, ge=5, le=40, description="outer diameter of the lens ring, caliper")
     fit_clearance: float = Field(0.4, ge=0.1, le=2.0, description="slack around the camera, total")
     # aim
-    tilt_deg: float = Field(15.0, ge=0, le=45, description="camera tilt DOWN, relative to the ring-face normal")
-    camera_offset_y: float = Field(-3.0, ge=-15, le=15, description="front-face centre height vs opening centre")
+    tilt_deg: float = Field(-22.0, ge=-45, le=45, description="camera tilt DOWN (positive) or UP (negative), relative to the ring-face normal")
+    camera_offset_y: float = Field(2.0, ge=-15, le=15, description="front-face centre height vs opening centre")
     window_half_angle: float = Field(50.0, ge=20, le=75, description="flare of the lens window, degrees")
     fov_h: float = Field(136.0, ge=60, le=190, description="horizontal view to keep clear (OEM figure)")
     fov_v: float = Field(100.0, ge=40, le=160, description="vertical view to keep clear (OEM figure)")
     # mount
-    min_wall: float = Field(2.0, ge=1.2, le=6, description="thinnest allowed wall around the camera pocket")
+    min_wall: float = Field(1.2, ge=1.2, le=6, description="thinnest allowed wall around the camera pocket")
     front_wall: float = Field(1.6, ge=1.2, le=6, description="thinnest material in front of the camera")
     flange_length: float = Field(121.4, ge=50, le=200, description="strap measured 121.36 mm")
     flange_width: float = Field(44.0, ge=20, le=80)
@@ -53,9 +53,21 @@ class Params(BaseModel):
         description="centre to centre: (109.79 outer-edge + 96.69 inner-edge hole readings) / 2")
     bolt_screw: str = "M6"   # measured thread 5.92 mm, 20 mm long hex flange bolt
     # the opening in the car's trim ring; the pod fills it, minus a small gap
-    opening_w: float = Field(35.03, ge=15, le=100, description="trim opening width, caliper")
-    opening_h: float = Field(34.76, ge=15, le=100, description="trim opening other dimension, caliper")
+    # 35.03 x 34.76 was the shelf/outer edge, NOT the hole. Plug gauge (square, R5 corners): 32.5 mm is a
+    # little loose, 34 mm is really tight, so the hole is ~34 mm; the pod is 34.0 - 0.6 = 33.4 mm.
+    opening_w: float = Field(26.9, ge=15, le=100, description="sleeve + gap: the user's own 28 mm part passed with room to spare, so the sleeve is ~26.3 mm wide")
+    opening_h: float = Field(26.8, ge=15, le=100, description="sleeve height + gap; tilted-gauge pods 27-29 mm tall passed")
+    depth_span: float | None = Field(34.0, ge=15, le=100,
+                                     description="distance over which the 12/30 mm depth readings were taken; defaults to opening_h")
     opening_gap: float = Field(0.6, ge=0.2, le=3.0, description="total slack between pod and opening")
+    lite: bool = Field(False, description="fit-test version: bolt ears and a bar instead of the full brace plate")
+    shelf_plate_w: float = Field(33.4, ge=0, le=60, description="front plate that sits in the 34 mm shelf recess and stops the pod; 0 = none")
+    shelf_plate_h: float = Field(33.4, ge=0, le=60)
+    shelf_plate_t: float = Field(3.0, ge=0, le=10)
+    view_w: float = Field(34.0, ge=15, le=100, description="the outer opening the lens looks out through")
+    view_h: float = Field(34.0, ge=15, le=100)
+    pod_only: bool = Field(False, description="diagnostic: the pod with its pocket and no brace plate")
+    pod_corner_radius: float = Field(5.0, ge=0.5, le=12, description="rounded corners of the pod (gauge used R5)")
     # the flat brace plane, measured with the depth rod from the ring face
     depth_bottom: float = Field(12.0, ge=1, le=80, description="ring face to brace plane at the bottom edge")
     depth_top: float = Field(30.0, ge=1, le=80, description="ring face to brace plane at the top edge")
@@ -72,7 +84,7 @@ class Params(BaseModel):
     @property
     def slope_deg(self) -> float:
         """Angle between the ring face and the flat brace plane."""
-        return math.degrees(math.atan((self.depth_top - self.depth_bottom) / self.opening_h))
+        return math.degrees(math.atan((self.depth_top - self.depth_bottom) / (self.depth_span or self.opening_h)))
 
     @property
     def mid_depth(self) -> float:
@@ -90,7 +102,7 @@ class Params(BaseModel):
     def recess(self) -> float:
         """Depth of the camera's front-face centre behind the ring face: the top edge of the
         tilted face still sits front_wall behind the ring face."""
-        return self.pocket_h / 2 * math.sin(math.radians(self.tilt_deg)) + self.front_wall
+        return self.pocket_h / 2 * abs(math.sin(math.radians(self.tilt_deg))) + self.front_wall
 
     @model_validator(mode="after")
     def _check(self):
@@ -98,7 +110,7 @@ class Params(BaseModel):
         if self.depth_top <= self.depth_bottom:
             raise ValueError("depth_top must be greater than depth_bottom (top of the opening is deeper)")
         side_w = (self.pod_w - self.pocket_w) / 2
-        if side_w < self.min_wall:
+        if side_w < self.min_wall - 1e-6:
             raise ValueError(
                 f"opening {self.opening_w} mm wide leaves only {side_w:.2f} mm wall beside the camera; "
                 f"need >= {self.min_wall} mm")
@@ -140,17 +152,31 @@ def _in_camera_frame(p: Params, shape):
 def build(p: Params, material: Material) -> Part:
     # pod: prism perpendicular to the ring face, trimmed by the brace plane
     deep = p.depth_top + 10
-    pod = Pos(0, 0, -deep) * Box(p.pod_w, p.pod_h, deep, align=BOTTOM)
+    pod = Box(p.pod_w, p.pod_h, deep, align=BOTTOM)
+    pod = Pos(0, 0, -deep) * fillet(pod.edges().filter_by(Axis.Z), p.pod_corner_radius)
     ring_side_of_plane = _in_brace_frame(p, Box(400, 400, 200, align=BOTTOM))
     pod = pod & ring_side_of_plane
 
     # brace: flat plate whose back face lies on the plane
-    flange = Box(p.flange_length, p.flange_width, p.flange_thickness, align=BOTTOM)
-    flange = fillet(flange.edges().filter_by(Axis.Z), 4)
+    if p.lite:
+        # same plane, hole positions and thickness; just ears around the bolts joined by a bar
+        flange = Box(p.bolt_spacing, 14.0, p.flange_thickness, align=BOTTOM)
+        for sx in (-1, 1):
+            ear = Box(18.0, 24.0, p.flange_thickness, align=BOTTOM)
+            ear = fillet(ear.edges().filter_by(Axis.Z), 4)
+            flange = flange + Pos(sx * p.bolt_spacing / 2, 0, 0) * ear
+    else:
+        flange = Box(p.flange_length, p.flange_width, p.flange_thickness, align=BOTTOM)
+        flange = fillet(flange.edges().filter_by(Axis.Z), 4)
     for sx in (-1, 1):
         flange = flange - Pos(sx * p.bolt_spacing / 2, 0, 0) * fasteners.through_hole(
             p.bolt_screw, p.flange_thickness, material)
-    body = pod + _in_brace_frame(p, flange)
+    body = pod if p.pod_only else pod + _in_brace_frame(p, flange)
+
+    if p.shelf_plate_t > 0:
+        plate = fillet(Box(p.shelf_plate_w, p.shelf_plate_h, p.shelf_plate_t, align=BOTTOM).edges().filter_by(Axis.Z),
+                       p.pod_corner_radius)
+        body = body + Pos(0, 0, -p.shelf_plate_t) * plate
 
     # camera pocket: tilted, open at the back
     pocket = _in_camera_frame(p, Pos(0, 0, 0) * Box(p.pocket_w, p.pocket_h, p.camera_len + 80, align=TOP))
@@ -168,6 +194,8 @@ def build(p: Params, material: Material) -> Part:
 def describe(p: Params, material: Material) -> dict:
     d = fasteners.hole_diameter(p.bolt_screw, material)
     holes = []
+    if p.pod_only:
+        return {"holes": holes}
     for sx in (-1, 1):
         c = brace_to_face(p, sx * p.bolt_spacing / 2, 0.0, p.flange_thickness / 2)
         holes.append({"x": c.X, "y": c.Y, "z": c.Z, "diameter": d, "outer_diameter": d,
@@ -175,11 +203,13 @@ def describe(p: Params, material: Material) -> dict:
     return {"holes": holes}
 
 
-def print_orientation(solid: Part) -> Part:
-    """Ring face (the flat front of the pod) down on the bed. The pod walls and the 15 degree
-    camera pocket are then at most ~15 degrees off vertical; the brace overhangs and needs support."""
-    flipped = Rot(X=180) * solid
-    return Pos(0, 0, -flipped.bounding_box().min.Z) * flipped
+def print_orientation(solid: Part, p: "Params | None" = None) -> Part:
+    """Brace plane (the back of the flange) flat on the bed, pod standing up from it. The pocket
+    is open at the back, so it opens onto the bed; almost nothing overhangs and no supports are
+    needed except possibly a bridged roof over the pocket. The pod's front face is a sloped top."""
+    p = p or Params()
+    flat = Rot(X=p.slope_deg) * Pos(0, 0, p.mid_depth) * solid
+    return Pos(0, 0, -flat.bounding_box().min.Z) * flat
 
 
 # ---------------------------------------------------------------------------- extra checks
@@ -197,7 +227,7 @@ def _ray_clear(solid: Part, p: Params, az: float, el: float, step: float = 1.0) 
         return False
     t_exit = -origin.Z / d.Z                     # where the ray crosses the ring face
     exit_x, exit_y = origin.X + d.X * t_exit, origin.Y + d.Y * t_exit
-    if abs(exit_x) > p.opening_w / 2 or abs(exit_y) > p.opening_h / 2:
+    if abs(exit_x) > p.view_w / 2 or abs(exit_y) > p.view_h / 2:
         return False                             # would hit the lid around the opening
     n = int(t_exit / step)
     for i in range(1, n + 1):

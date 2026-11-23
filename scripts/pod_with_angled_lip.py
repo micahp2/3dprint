@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--slot", type=float, default=10.0, help="rear plate cable slot width, mm (original slit ~2)")
     ap.add_argument("--cam-x", type=float, default=24.2, help="inside width between the side walls, mm (camera 23.5)")
     ap.add_argument("--cam-z", type=float, default=27.2, help="inside length between the end plates, mm (camera 26.5)")
+    ap.add_argument("--cam-y", type=float, default=23.4, help="camera thickness from the closed wall outward, mm")
+    ap.add_argument("--strap-standoff", type=float, default=6.0, help="strap underside height behind the lip's front face, mm")
     a = ap.parse_args()
 
     boolean = lambda op, ms: getattr(trimesh.boolean, op)(ms, engine="manifold")
@@ -81,14 +83,45 @@ def main():
     lip = boolean("difference", [lip, box(-13.9, 13.9, -13.9, 13.9, -60, 60)])
     if a.bottom_ext <= 0:
         lip = boolean("intersection", [lip, box(-60, 60, -60, 14.0, -60, 60)])   # flush with the closed wall
-    body = boolean("union", [pod, lip])
+    # strap pad: a boss on the rear plate's closed-side half whose flat end is parallel to the panel plane, standing
+    # `strap_standoff` mm behind the lip's front face. A strap bolted on spacers of that height lies flat on it.
+    pad = box(-13.0, 13.0, 3.0, 14.0, -50, -15.5)
+    keep = box(-50, 50, -60, 60, -a.strap_standoff, 60)
+    keep.apply_transform(M)
+    pad = boolean("intersection", [pad, keep])
+    body = boolean("union", [pod, lip, pad])
+
+    # snap-on keeper: closes the open top and presses the camera against the closed wall
+    yk = 12.8 - a.cam_y                                   # where the camera's top face is (y)
+    z0, z1 = -13.4, 10.2                                  # stays clear of the lip's top flange at the lens end
+    parts = [box(-13.9, 13.9, -15.6, -14.0, z0 - 0.4, z1),            # plate over the open top
+             box(-10.5, 10.5, -14.1, yk, z0, z1)]                      # plug between the walls
+    cuts = []
+    for sx in (-1, 1):
+        x_in, x_out = sorted((sx * 10.9, sx * 11.7))
+        parts.append(box(x_in, x_out, -14.1, yk, z0, z1))              # spring tongue beside each wall
+        ridge = trimesh.creation.cylinder(radius=0.7, height=z1 - z0 - 1.5, sections=24)
+        ridge.apply_translation([sx * 11.7, yk - 0.8, (z0 + z1) / 2])
+        parts.append(ridge)
+        dimple = trimesh.creation.cylinder(radius=0.8, height=z1 - z0 - 1.0, sections=24)
+        dimple.apply_translation([sx * xi, yk - 0.8, (z0 + z1) / 2])
+        cuts.append(dimple)
+    keeper = boolean("union", parts)
+    body = boolean("difference", [body, *cuts])
+    print("keeper/pod interference mm3:", round(boolean("intersection", [keeper, body]).volume, 1))
+
+    kp = keeper.copy()
+    kp.apply_transform(rot(np.radians(90), [1, 0, 0]))              # new z = y: plate face on the bed
+    kp.apply_translation([0, -kp.bounds.mean(axis=0)[1], -kp.bounds[0][2]])
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    kp.export(str(out.with_name(out.name + "_keeper.stl")))
+    print("keeper", kp.extents.round(1), "watertight", kp.is_watertight)
 
     # print: closed wall (y=+14) on the bed, open side up
     body.apply_transform(rot(np.radians(-90), [1, 0, 0]))          # new z = -y
     body.apply_translation([0, 0, -body.bounds[0][2]])
     body.apply_translation([0, -body.bounds.mean(axis=0)[1], 0])
-    out = Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
     body.export(str(out.with_suffix(".stl")))
     print("lens stands past the plane: top %.1f mm, closed side %.1f mm" % (a.inset, 16 - (zf - 28 * np.tan(th))))
     print("ok extents", body.extents.round(1), "watertight", body.is_watertight, "vol %.1f cm3" % (body.volume / 1000),
